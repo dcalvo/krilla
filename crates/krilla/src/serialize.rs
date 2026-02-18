@@ -106,6 +106,12 @@ pub struct SerializeSettings {
     /// just use the default function which doesn't render them at all. If you do want this, it
     /// is recommended that you use the function provided by the `krilla-svg` crate.
     pub render_svg_glyph_fn: RenderSvgGlyphFn,
+    /// An optional callback to write custom XMP metadata fields.
+    ///
+    /// Called with a mutable reference to the [`xmp_writer::XmpWriter`] after krilla
+    /// has written its standard metadata. Use this to add custom XMP properties
+    /// such as `pdfuaid:part` for PDF/UA identification.
+    pub custom_xmp: Option<fn(&mut xmp_writer::XmpWriter)>,
 }
 
 pub type RenderSvgGlyphFn = fn(&[u8], rgb::Color, GlyphId, (f32, f32), &mut Surface) -> Option<()>;
@@ -131,6 +137,7 @@ impl Default for SerializeSettings {
             configuration: Configuration::new(),
             enable_tagging: true,
             render_svg_glyph_fn: |_, _, _, _, _| None,
+            custom_xmp: None,
         }
     }
 }
