@@ -187,6 +187,10 @@ impl ChunkContainer {
         let validators = settings.validators();
         validators.write_xmp(&mut xmp);
 
+        if let Some(custom_xmp) = sc.serialize_settings().custom_xmp {
+            custom_xmp(&mut xmp);
+        }
+
         xmp.num_pages(sc.page_infos().len() as u32);
         xmp.format("application/pdf");
         xmp.instance_id(&instance_id);
