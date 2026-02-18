@@ -177,3 +177,6 @@ pub use graphics::*;
 pub use interactive::*;
 pub use interchange::*;
 pub use serialize::SerializeSettings;
+
+/// Re-export of the `xmp_writer` crate for custom XMP metadata.
+pub use xmp_writer;
