@@ -130,6 +130,10 @@ impl ChunkContainer {
 
         sc.serialize_settings().validator().write_xmp(&mut xmp);
 
+        if let Some(custom_xmp) = sc.serialize_settings().custom_xmp {
+            custom_xmp(&mut xmp);
+        }
+
         xmp.num_pages(self.pages.len() as u32);
         xmp.format("application/pdf");
         xmp.instance_id(&instance_id);
@@ -207,7 +211,8 @@ impl ChunkContainer {
             let write_doc_title = sc
                 .serialize_settings()
                 .validator()
-                .requires_display_doc_title();
+                .requires_display_doc_title()
+                || self.struct_tree_root.is_some();
             let text_direction = self.metadata.as_ref().and_then(|m| m.text_direction);
 
             if write_doc_title || text_direction.is_some() {
