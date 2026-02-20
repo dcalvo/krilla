@@ -595,7 +595,7 @@ impl TagKind {
             // Arbitrary custom role-mapped tags.
             Self::Custom(ct) => {
                 write_kind_custom(sc, struct_elem, Name(ct.name.as_bytes()));
-                sc.register_custom_role(&ct.name, ct.maps_to);
+                sc.register_custom_role(&ct.name, ct.maps_to.into());
             }
         };
     }
