@@ -25,7 +25,7 @@ use crate::graphics::color::DEVICE_GRAY;
 use crate::graphics::color::{cmyk, luma, rgb};
 use crate::graphics::icc::{GenericICCProfile, ICCBasedColorSpace, ICCProfile};
 use crate::serialize::SerializeContext;
-use crate::stream::{deflate_encode, FilterStreamBuilder};
+use crate::stream::{StreamFilter, deflate_encode, FilterStreamBuilder};
 use crate::util::{set_colorspace, Deferred, NameExt, SipHashable};
 use crate::Data;
 
@@ -97,6 +97,7 @@ struct SampledRepr {
     color_channel: Vec<u8>,
     alpha_channel: Option<Vec<u8>>,
     bits_per_component: BitsPerComponent,
+    filters: Vec<StreamFilter>,
 }
 
 struct JpegRepr {
@@ -307,6 +308,7 @@ impl Image {
                     color_channel: deflate_encode(color_channel),
                     alpha_channel: image.alpha_channel().map(deflate_encode),
                     bits_per_component: image.bits_per_component(),
+                    filters: vec![StreamFilter::Flate],
                 }))
             }),
             metadata,
@@ -335,11 +337,51 @@ impl Image {
                     color_channel,
                     alpha_channel,
                     bits_per_component,
+                    filters: vec![StreamFilter::Flate],
                 }))
             }),
             metadata,
             sip: hash,
             interpolate: false,
+        }))
+    }
+
+    /// Create an image from pre-compressed data with the given stream filters.
+    ///
+    /// Both `color_channel` and `alpha_channel` (if present) must already be
+    /// encoded with the specified filters. No additional compression is applied.
+    pub fn from_precompressed(
+        color_channel: Vec<u8>,
+        alpha_channel: Option<Vec<u8>>,
+        filters: Vec<StreamFilter>,
+        width: u32,
+        height: u32,
+        bits_per_component: BitsPerComponent,
+        color_space: ImageColorspace,
+        interpolate: bool,
+    ) -> Self {
+        let has_alpha = alpha_channel.is_some();
+        let hash = color_channel.sip_hash();
+        let metadata = ImageMetadata {
+            size: (width, height),
+            color_space,
+            has_alpha,
+            bits_per_component,
+            icc: None,
+        };
+
+        Self(Arc::new(ImageRepr {
+            inner: Deferred::new(move || {
+                Ok(Repr::Sampled(SampledRepr {
+                    color_channel,
+                    alpha_channel,
+                    bits_per_component,
+                    filters,
+                }))
+            }),
+            metadata,
+            sip: hash,
+            interpolate,
         }))
     }
 
@@ -437,8 +479,9 @@ impl Image {
             let alpha_mask = match repr {
                 Repr::Sampled(sampled) => sampled.alpha_channel.as_ref().map(|mask_data| {
                     let soft_mask_id = soft_mask_id.unwrap();
-                    let mask_stream = FilterStreamBuilder::new_from_deflated(mask_data)
-                        .finish(&serialize_settings);
+                    let mask_stream =
+                        FilterStreamBuilder::new_from_precompressed(mask_data, &sampled.filters)
+                            .finish(&serialize_settings);
                     let mut s_mask = chunk.image_xobject(soft_mask_id, mask_stream.encoded_data());
                     mask_stream.write_filters(s_mask.deref_mut().deref_mut());
                     s_mask.width(self.size().0 as i32);
@@ -460,8 +503,10 @@ impl Image {
             };
 
             let filter_stream = match repr {
-                Repr::Sampled(s) => FilterStreamBuilder::new_from_deflated(&s.color_channel)
-                    .finish(&serialize_settings),
+                Repr::Sampled(s) => {
+                    FilterStreamBuilder::new_from_precompressed(&s.color_channel, &s.filters)
+                        .finish(&serialize_settings)
+                }
                 Repr::Jpeg(j) => FilterStreamBuilder::new_from_jpeg_data(j.data.as_ref())
                     .finish(&serialize_settings),
             };
@@ -577,6 +622,7 @@ fn decode_png(data: &[u8]) -> Result<Repr, String> {
         color_channel,
         alpha_channel,
         bits_per_component,
+        filters: vec![StreamFilter::Flate],
     }))
 }
 
@@ -660,6 +706,7 @@ fn decode_gif(data: Data) -> Result<Repr, String> {
         color_channel,
         alpha_channel,
         bits_per_component,
+        filters: vec![StreamFilter::Flate],
     }))
 }
 
@@ -716,6 +763,7 @@ fn decode_webp(data: Data) -> Result<Repr, String> {
         color_channel,
         alpha_channel,
         bits_per_component,
+        filters: vec![StreamFilter::Flate],
     }))
 }
 

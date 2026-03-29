@@ -126,11 +126,25 @@ impl<'a> StreamBuilder<'a> {
 
 /// A PDF stream filter.
 #[derive(Debug, Copy, Clone)]
-pub(crate) enum StreamFilter {
+pub enum StreamFilter {
+    /// DEFLATE compression (FlateDecode).
     Flate,
+    /// DEFLATE compression with memoization.
     FlateMemoized,
+    /// ASCII hexadecimal encoding (ASCIIHexDecode).
     AsciiHex,
+    /// JPEG / DCT compression (DCTDecode).
     Dct,
+    /// LZW compression (LZWDecode).
+    Lzw,
+    /// Run-length encoding (RunLengthDecode).
+    RunLength,
+    /// CCITT fax compression (CCITTFaxDecode).
+    CcittFax,
+    /// JBIG2 compression (JBIG2Decode).
+    Jbig2,
+    /// JPEG 2000 compression (JPXDecode).
+    Jpx,
 }
 
 impl StreamFilter {
@@ -140,15 +154,25 @@ impl StreamFilter {
             Self::Flate => Name(b"FlateDecode"),
             Self::FlateMemoized => Name(b"FlateDecode"),
             Self::Dct => Name(b"DCTDecode"),
+            Self::Lzw => Name(b"LZWDecode"),
+            Self::RunLength => Name(b"RunLengthDecode"),
+            Self::CcittFax => Name(b"CCITTFaxDecode"),
+            Self::Jbig2 => Name(b"JBIG2Decode"),
+            Self::Jpx => Name(b"JPXDecode"),
         }
     }
 
     pub(crate) fn is_binary(&self) -> bool {
         match self {
-            StreamFilter::Flate => true,
-            StreamFilter::FlateMemoized => true,
+            StreamFilter::Flate
+            | StreamFilter::FlateMemoized
+            | StreamFilter::Dct
+            | StreamFilter::Lzw
+            | StreamFilter::RunLength
+            | StreamFilter::CcittFax
+            | StreamFilter::Jbig2
+            | StreamFilter::Jpx => true,
             StreamFilter::AsciiHex => false,
-            StreamFilter::Dct => true,
         }
     }
 }
@@ -160,10 +184,14 @@ impl StreamFilter {
             StreamFilter::Flate => deflate_encode(content),
             StreamFilter::FlateMemoized => deflate_encode_memoized(content),
             StreamFilter::AsciiHex => hex_encode(content),
-            // Note: We don't actually encode manually with DCT, because
-            // this is only used for JPEG images which are already encoded,
-            // so this shouldn't be called at all.
-            StreamFilter::Dct => panic!("can't apply dct decode"),
+            // Passthrough-only filters: data is already encoded, so apply() should
+            // never be called on these. They are only used with add_unapplied_filter().
+            StreamFilter::Dct
+            | StreamFilter::Lzw
+            | StreamFilter::RunLength
+            | StreamFilter::CcittFax
+            | StreamFilter::Jbig2
+            | StreamFilter::Jpx => panic!("can't apply {self:?} filter"),
         }
     }
 }
@@ -252,6 +280,14 @@ impl<'a> FilterStreamBuilder<'a> {
 
     pub(crate) fn new_from_uncompressed(content: &'a [u8]) -> Self {
         Self::empty(content)
+    }
+
+    pub(crate) fn new_from_precompressed(content: &'a [u8], filters: &[StreamFilter]) -> Self {
+        let mut fs = Self::empty(content);
+        for &filter in filters {
+            fs.add_unapplied_filter(filter);
+        }
+        fs
     }
 
     pub(crate) fn new_from_jpeg_data(content: &'a [u8]) -> Self {
