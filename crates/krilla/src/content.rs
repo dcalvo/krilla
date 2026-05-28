@@ -19,7 +19,7 @@ use crate::geom::{Point, Rect, Transform};
 use crate::graphics::color::{Color, ColorSpace};
 use crate::graphics::graphics_state::{ExtGState, GraphicsStates};
 #[cfg(feature = "raster-images")]
-use crate::graphics::image::Image;
+use crate::graphics::image::{Image, StencilMask};
 use crate::graphics::mask::Mask;
 use crate::graphics::paint::{Fill, FillRule, InnerPaint, LineCap, LineJoin, Paint, Stroke};
 use crate::graphics::shading_function::{
@@ -1003,6 +1003,37 @@ impl ContentBuilder {
                 ));
 
                 sb.content.x_object(image_name.to_pdf_name());
+            },
+            sc,
+            chunk_container,
+        );
+    }
+
+    pub(crate) fn draw_image_mask(
+        &mut self,
+        mask: StencilMask,
+        fill: Fill,
+        size: Size,
+        sc: &mut SerializeContext,
+        chunk_container: &mut ChunkContainer,
+    ) {
+        self.apply_isolated_op(
+            |sb, _, _| {
+                // Scale the 1x1-mapped image mask to the actual dimensions.
+                let transform =
+                    Transform::from_row(size.width(), 0.0, 0.0, -size.height(), 0.0, size.height());
+                sb.concat_transform(&transform);
+                sb.expand_bbox(Rect::from_xywh(0.0, 0.0, 1.0, 1.0).unwrap());
+            },
+            move |sb, sc, chunk_container| {
+                // Set the non-stroking color the mask is painted with, then draw the
+                // `/ImageMask` XObject (it paints the current fill color through the mask).
+                let unit = Rect::from_xywh(0.0, 0.0, 1.0, 1.0).unwrap();
+                sb.content_set_fill_properties(unit, &fill, sc, chunk_container);
+                let mask_name = sb.rd_builder.register_resource(resource::XObject::new(
+                    sc.register_cacheable(chunk_container, mask),
+                ));
+                sb.content.x_object(mask_name.to_pdf_name());
             },
             sc,
             chunk_container,

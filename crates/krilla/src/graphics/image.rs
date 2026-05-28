@@ -14,7 +14,7 @@ use std::io::Cursor;
 use std::ops::DerefMut;
 use std::sync::Arc;
 
-use pdf_writer::{Array, Dict, Finish, Name, Null, Ref, Str};
+use pdf_writer::{Array, Chunk, Dict, Finish, Name, Null, Ref, Str};
 use png::{BitDepth, ColorType, Transformations};
 use zune_jpeg::zune_core::colorspace::ColorSpace;
 use zune_jpeg::JpegDecoder;
@@ -25,7 +25,8 @@ use crate::error::KrillaError;
 use crate::graphics::color::{cmyk, luma, rgb};
 use crate::graphics::color::{DEVICE_CMYK, DEVICE_GRAY, DEVICE_RGB};
 use crate::graphics::icc::{GenericICCProfile, ICCBasedColorSpace, ICCProfile};
-use crate::serialize::SerializeContext;
+use crate::resource::{self, Resourceable};
+use crate::serialize::{Cacheable, SerializeContext};
 use crate::stream::{deflate_encode, FilterStreamBuilder};
 use crate::util::{set_colorspace, Deferred, NameExt, SipHashable};
 use crate::Data;
@@ -166,7 +167,7 @@ impl PdfFilter {
 /// all integers or booleans, so these two cover every reproducible case. Filters
 /// whose parameters reference other objects (e.g. JBIG2 `/JBIG2Globals`) are not
 /// representable here and must not use this passthrough.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub enum DecodeParm {
     /// An integer parameter.
     Int(i32),
@@ -207,7 +208,7 @@ pub struct AlphaChannel {
 /// Emitted as a `/Mask` entry referencing a child `/ImageMask` XObject (so the
 /// original 1-bit data — e.g. a JBIG2-encoded scan layer — is preserved verbatim
 /// rather than decoded into a soft mask). Bits-per-component is implicitly 1.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub struct StencilMask {
     /// Encoded stencil bytes (already compressed with `filters`).
     pub data: Vec<u8>,
@@ -726,22 +727,7 @@ impl Image {
                             // or `/BitsPerComponent`, both implicitly fixed), referenced
                             // from the parent via `/Mask`.
                             attach_stencil = true;
-                            let mut img_mask = chunk.image_xobject(mask_id, &stencil.data);
-                            write_pdf_filters(img_mask.deref_mut().deref_mut(), &stencil.filters);
-                            write_decode_parms(
-                                img_mask.deref_mut().deref_mut(),
-                                &stencil.decode_parms,
-                            );
-                            img_mask.width(stencil.width as i32);
-                            img_mask.height(stencil.height as i32);
-                            img_mask.image_mask(true);
-                            if stencil.invert {
-                                img_mask.decode([1.0, 0.0]);
-                            }
-
-                            if self.0.interpolate {
-                                img_mask.interpolate(true);
-                            }
+                            write_image_mask(&mut chunk, mask_id, stencil, self.0.interpolate);
                         }
                     }
                     mask_id
@@ -916,6 +902,48 @@ fn write_pdf_filters(dict: &mut Dict<'_>, filters: &[PdfFilter]) {
                 .items(multi.iter().map(|f| f.to_name()));
         }
     }
+}
+
+/// Write a 1-bit `/ImageMask` XObject (`stencil`) into `chunk` under `ref_`. Shared
+/// by the `/Mask`-child path and the standalone [`StencilMask`] cacheable, so the
+/// filter chain and `/DecodeParms` are emitted identically in both.
+fn write_image_mask(chunk: &mut Chunk, ref_: Ref, stencil: &StencilMask, interpolate: bool) {
+    let mut img_mask = chunk.image_xobject(ref_, &stencil.data);
+    write_pdf_filters(img_mask.deref_mut().deref_mut(), &stencil.filters);
+    write_decode_parms(img_mask.deref_mut().deref_mut(), &stencil.decode_parms);
+    img_mask.width(stencil.width as i32);
+    img_mask.height(stencil.height as i32);
+    img_mask.image_mask(true);
+    if stencil.invert {
+        img_mask.decode([1.0, 0.0]);
+    }
+    if interpolate {
+        img_mask.interpolate(true);
+    }
+    img_mask.finish();
+}
+
+/// A standalone `/ImageMask` drawn directly with the current fill color (see
+/// [`crate::surface::Surface::draw_image_mask`]). Reuses the [`StencilMask`] data
+/// shape but serializes as a top-level XObject rather than a `/Mask` child.
+impl Cacheable for StencilMask {
+    fn serialize(
+        self,
+        sc: &mut SerializeContext,
+        chunk_container: &mut ChunkContainer,
+        root_ref: Ref,
+    ) {
+        let mut chunk = sc.new_chunk();
+        write_image_mask(&mut chunk, root_ref, &self, false);
+        chunk_container
+            .streams
+            .images
+            .push(Deferred::new(move || Ok::<_, KrillaError>(chunk)));
+    }
+}
+
+impl Resourceable for StencilMask {
+    type Resource = resource::XObject;
 }
 
 /// Write one `/DecodeParms` dict's scalar (name, value) pairs into `dict`.

@@ -19,7 +19,7 @@ use crate::graphic::Graphic;
 use crate::graphics::blend::BlendMode;
 use crate::graphics::graphics_state::ExtGState;
 #[cfg(feature = "raster-images")]
-use crate::graphics::image::Image;
+use crate::graphics::image::{Image, StencilMask};
 use crate::graphics::mask::Mask;
 use crate::graphics::paint::{Fill, FillRule, Stroke};
 use crate::graphics::shading_function::ShadingFunction;
@@ -610,6 +610,18 @@ impl<'a> Surface<'a> {
         self.bd
             .get_mut()
             .draw_image(image, size, self.sc, self.chunk_container);
+    }
+
+    /// Draw a 1-bit image mask, painting the current `fill` color through it.
+    ///
+    /// Unlike [`draw_image`](Self::draw_image), which draws a color image, this emits a
+    /// standalone `/ImageMask` XObject filled with `fill` — the faithful representation
+    /// of a source PDF's directly-drawn `/ImageMask`, avoiding decoding the stencil into
+    /// a full-resolution RGBA buffer.
+    pub fn draw_image_mask(&mut self, mask: StencilMask, fill: Fill, size: Size) {
+        self.bd
+            .get_mut()
+            .draw_image_mask(mask, fill, size, self.sc, self.chunk_container);
     }
 
     /// Draw a new graphic.
