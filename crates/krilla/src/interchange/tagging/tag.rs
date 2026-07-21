@@ -200,6 +200,67 @@ impl From<StandardRole> for pdf_writer::types::StructRole {
     }
 }
 
+impl StandardRole {
+    /// Parse a standard structure type name (e.g. a role map target) into
+    /// its role. This is the total inverse of the `StructRole` conversion;
+    /// note that `"H"` is [`StandardRole::StructuredHeading`]. Returns
+    /// `None` for non-standard names.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "Document" => Self::Document,
+            "Part" => Self::Part,
+            "Art" => Self::Art,
+            "Sect" => Self::Sect,
+            "Div" => Self::Div,
+            "BlockQuote" => Self::BlockQuote,
+            "Caption" => Self::Caption,
+            "TOC" => Self::TOC,
+            "TOCI" => Self::TOCI,
+            "Index" => Self::Index,
+            "NonStruct" => Self::NonStruct,
+            "Private" => Self::Private,
+            "P" => Self::P,
+            "H" => Self::StructuredHeading,
+            "H1" => Self::H1,
+            "H2" => Self::H2,
+            "H3" => Self::H3,
+            "H4" => Self::H4,
+            "H5" => Self::H5,
+            "H6" => Self::H6,
+            "L" => Self::L,
+            "LI" => Self::LI,
+            "Lbl" => Self::Lbl,
+            "LBody" => Self::LBody,
+            "Table" => Self::Table,
+            "TR" => Self::TR,
+            "TH" => Self::TH,
+            "TD" => Self::TD,
+            "THead" => Self::THead,
+            "TBody" => Self::TBody,
+            "TFoot" => Self::TFoot,
+            "Span" => Self::Span,
+            "Quote" => Self::Quote,
+            "Note" => Self::Note,
+            "Reference" => Self::Reference,
+            "BibEntry" => Self::BibEntry,
+            "Code" => Self::Code,
+            "Link" => Self::Link,
+            "Annot" => Self::Annot,
+            "Ruby" => Self::Ruby,
+            "RB" => Self::RB,
+            "RT" => Self::RT,
+            "RP" => Self::RP,
+            "Warichu" => Self::Warichu,
+            "WT" => Self::WT,
+            "WP" => Self::WP,
+            "Figure" => Self::Figure,
+            "Formula" => Self::Formula,
+            "Form" => Self::Form,
+            _ => return None,
+        })
+    }
+}
+
 /// An arbitrary custom tag with role mapping to a standard PDF role.
 ///
 /// Custom tags are emitted with a custom `/S` name and registered in the
