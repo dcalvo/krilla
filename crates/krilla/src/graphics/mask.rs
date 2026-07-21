@@ -3,6 +3,7 @@
 use pdf_writer::{Finish, Name, Ref};
 
 use crate::chunk_container::ChunkContainer;
+use crate::color::rgb;
 use crate::geom::{Rect, Transform};
 use crate::graphics::shading_function::{GradientProperties, ShadingFunction};
 use crate::graphics::xobject::XObject;
@@ -28,6 +29,8 @@ pub struct Mask {
     /// we want to manually set the bbox of the underlying XObject to match the shape that the
     /// gradient is being applied to.
     custom_bbox: Option<Rect>,
+    /// The backdrop color (`/BC`) of a luminosity mask.
+    backdrop: Option<rgb::Color>,
 }
 
 impl Mask {
@@ -38,7 +41,19 @@ impl Mask {
             stream,
             mask_type,
             custom_bbox: None,
+            backdrop: None,
         }
+    }
+
+    /// Set the backdrop color of a luminosity mask (`/BC`).
+    ///
+    /// The backdrop is the color the mask group is composited against
+    /// before its luminosity is derived; it defaults to black. RGB is the
+    /// right color type here because mask transparency groups are always
+    /// serialized with an RGB group color space. Ignored for alpha masks.
+    pub fn with_backdrop(mut self, backdrop: rgb::Color) -> Self {
+        self.backdrop = Some(backdrop);
+        self
     }
 
     /// Create a new mask for a shading to encode the opacity channels.
@@ -78,6 +93,7 @@ impl Mask {
             stream: shading_stream,
             mask_type: MaskType::Luminosity,
             custom_bbox: Some(bbox),
+            backdrop: None,
         })
     }
 }
@@ -118,6 +134,18 @@ impl Cacheable for Mask {
         dict.pair(Name(b"Type"), Name(b"Mask"));
         dict.pair(Name(b"S"), self.mask_type.to_name());
         dict.pair(Name(b"G"), x_object);
+
+        if self.mask_type == MaskType::Luminosity {
+            if let Some(backdrop) = self.backdrop {
+                // Components are in the group color space, which is always
+                // RGB for masks (see `XObject::new` with `transparency`).
+                dict.insert(Name(b"BC")).array().items([
+                    backdrop.red() as f32 / 255.0,
+                    backdrop.green() as f32 / 255.0,
+                    backdrop.blue() as f32 / 255.0,
+                ]);
+            }
+        }
 
         dict.finish();
     }
