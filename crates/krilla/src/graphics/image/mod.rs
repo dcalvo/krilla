@@ -12,6 +12,8 @@ mod png;
 
 use std::fmt::{Debug, Formatter};
 use std::hash::{Hash, Hasher};
+
+use siphasher::sip128::{Hasher128, SipHasher13};
 use std::io::Cursor;
 use std::ops::DerefMut;
 use std::sync::Arc;
@@ -212,6 +214,24 @@ pub struct AlphaChannel {
     pub bits_per_component: BitsPerComponent,
 }
 
+impl Hash for AlphaChannel {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.data.hash(state);
+        self.filters.hash(state);
+        self.decode_parms.hash(state);
+        hash_f32s(self.matte.as_deref(), state);
+        hash_f32s(self.decode.as_deref(), state);
+        (self.width, self.height).hash(state);
+        self.bits_per_component.hash(state);
+    }
+}
+
+fn hash_f32s<H: Hasher>(values: Option<&[f32]>, state: &mut H) {
+    values
+        .map(|v| v.iter().map(|f| f.to_bits()).collect::<Vec<_>>())
+        .hash(state);
+}
+
 /// A 1-bit stencil mask for a precompressed image.
 ///
 /// Emitted as a `/Mask` entry referencing a child `/ImageMask` XObject (so the
@@ -235,7 +255,7 @@ pub struct StencilMask {
 }
 
 /// The mask accompanying a precompressed image.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub enum PrecompressedMask {
     /// Grayscale soft mask, written as `/SMask`.
     Soft(AlphaChannel),
@@ -247,7 +267,7 @@ pub enum PrecompressedMask {
 /// indices into `lookup`, resolved against a device `base` space. Emitted verbatim
 /// as `[/Indexed base hival (lookup)]` so palette images pass through encoded
 /// instead of being decoded to RGBA. The base is restricted to device spaces.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub struct IndexedColorSpace {
     /// Device color space the palette entries are expressed in.
     pub base: ImageColorspace,
@@ -556,7 +576,25 @@ impl Image {
         interpolate: bool,
     ) -> Self {
         let has_alpha = mask.is_some();
-        let hash = color_channel.sip_hash();
+        // Everything that ends up in the XObject goes into the hash: it's the image's
+        // identity for deduplication, and two images with the same color samples can
+        // still differ in mask, palette, filters or color space (e.g. black shapes that
+        // share one all-zero color stream and differ only in their soft masks).
+        let hash = {
+            let mut state = SipHasher13::new();
+            color_channel.hash(&mut state);
+            mask.hash(&mut state);
+            filters.hash(&mut state);
+            decode_parms.hash(&mut state);
+            (width, height).hash(&mut state);
+            bits_per_component.hash(&mut state);
+            color_space.hash(&mut state);
+            icc_profile.hash(&mut state);
+            indexed.hash(&mut state);
+            hash_f32s(color_decode.as_deref(), &mut state);
+            interpolate.hash(&mut state);
+            state.finish128().as_u128()
+        };
         // An `/ICCBased` source color space: re-embed the profile so the output
         // declares `[/ICCBased ...]` instead of a bare device space. Dropped if it
         // doesn't match the declared `color_space`'s component count.
@@ -1307,6 +1345,7 @@ fn get_icc_profile_type(data: &[u8], color_space: ImageColorspace) -> Option<Gen
 
 #[cfg(test)]
 mod tests {
+    use super::{AlphaChannel, BitsPerComponent, ImageColorspace, PrecompressedMask};
     use crate::image::Image;
     use std::sync::Arc;
 
@@ -1320,5 +1359,38 @@ mod tests {
     fn invalid_jpeg_image() {
         let e = Image::from_jpeg(Arc::new(b"dfngiudfg".to_vec()).into(), false);
         assert!(e.is_err());
+    }
+
+    fn precompressed_with_mask(mask_byte: u8) -> Image {
+        let mask = PrecompressedMask::Soft(AlphaChannel {
+            data: vec![mask_byte; 4],
+            filters: vec![],
+            decode_parms: vec![],
+            matte: Some(vec![0.0, 0.0, 0.0]),
+            decode: None,
+            width: 2,
+            height: 2,
+            bits_per_component: BitsPerComponent::Eight,
+        });
+        Image::from_precompressed(
+            vec![0; 12],
+            Some(mask),
+            vec![],
+            vec![],
+            2,
+            2,
+            BitsPerComponent::Eight,
+            ImageColorspace::Rgb,
+            None,
+            None,
+            None,
+            false,
+        )
+    }
+
+    #[test]
+    fn precompressed_images_differing_only_in_mask_stay_distinct() {
+        assert_eq!(precompressed_with_mask(0), precompressed_with_mask(0));
+        assert_ne!(precompressed_with_mask(0), precompressed_with_mask(255));
     }
 }
