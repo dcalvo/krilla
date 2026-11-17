@@ -36,7 +36,7 @@ use crate::serialize::SerializeContext;
 use crate::stream::{Stream, StreamBuilder};
 use crate::tagging::ArtifactType;
 use crate::text::Font;
-use crate::text::{draw_glyph, Glyph};
+use crate::text::{draw_glyph, Glyph, GlyphRun};
 #[cfg(feature = "simple-text")]
 use crate::text::{shape::naive_shape, TextDirection};
 
@@ -403,6 +403,64 @@ impl<'a> Surface<'a> {
                     );
                 }
             }
+        }
+    }
+
+    /// Draw glyph runs that together read as `actual_text`, whatever their glyphs map
+    /// to: an accented letter drawn as a spacing accent and a base letter (`´` and `e`
+    /// reading as `é`), possibly in two fonts or at two heights, or a hyphen that only
+    /// marks a line break.
+    ///
+    /// The runs are drawn with the currently active fill and/or stroke, as by
+    /// [`Surface::draw_glyphs`], but in one operation: under one transform, each run in
+    /// its own text object, all of them inside a `/Span` marked-content sequence with
+    /// an `/ActualText` entry (ISO 32000-1, 14.9.4). Each glyph keeps its own Unicode
+    /// mapping, so a reader that ignores `/ActualText` reads what it would without it.
+    ///
+    /// Unlike a cluster passed to [`Surface::draw_glyphs`] (glyphs sharing one text
+    /// range), this never maps a glyph to the replacement text: a cluster's text
+    /// becomes the `/ToUnicode` entry of any glyph in it that has none yet, which is
+    /// wrong for every other use of the glyph.
+    ///
+    /// The span is marked content, not a structure content item: it has no
+    /// identifier, and may be drawn inside a tagged section. It is written inside the
+    /// operation's own graphics state on purpose. A reader that places the replacement
+    /// text by the positions of the glyphs it covers (poppler) puts it in the wrong
+    /// place when the span encloses a change of transform.
+    ///
+    /// `/ActualText` requires PDF 1.5; below that the runs are drawn without it.
+    pub fn draw_glyphs_as<G: Glyph>(&mut self, runs: &[GlyphRun<'_, G>], actual_text: &str) {
+        let context_color = self.context_color();
+        let fill = self.fill.clone();
+        let stroke = self.stroke.clone();
+        let draw = |surface: &mut Self, fill: Option<&Fill>, stroke: Option<&Stroke>| {
+            surface.bd.get_mut().draw_glyph_runs(
+                runs,
+                Some(actual_text),
+                surface.sc,
+                surface.chunk_container,
+                fill,
+                stroke,
+                context_color,
+            );
+        };
+        match (fill.as_ref(), stroke.as_ref()) {
+            (Some(f), Some(_)) if self.has_complex_fill_or_stroke() => {
+                // As in `draw_glyphs`: the text is filled, and the stroke drawn as
+                // outlines, which carry no text.
+                draw(self, Some(f), None);
+                for run in runs {
+                    self.outline_glyphs(
+                        run.glyphs,
+                        context_color,
+                        run.start,
+                        run.font.clone(),
+                        run.font_size,
+                    );
+                }
+            }
+            (None, None) => draw(self, Some(&Fill::default()), None),
+            (f, s) => draw(self, f, s),
         }
     }
 

@@ -12,7 +12,7 @@ use tiny_skia_path::{Path, PathSegment, PathVerb};
 
 use crate::chunk_container::ChunkContainer;
 use crate::color::rgb;
-use crate::configure::ValidationError;
+use crate::configure::{PdfVersion, ValidationError};
 #[cfg(feature = "raster-images")]
 use crate::geom::Size;
 use crate::geom::{Point, Rect, Transform};
@@ -37,7 +37,7 @@ use crate::stream::Stream;
 use crate::text::group::{use_text_spanner, GlyphGroup, GlyphGrouper, GlyphSpan, GlyphSpanner};
 use crate::text::type3::ColoredGlyph;
 use crate::text::{Font, FontContainer, FontIdentifier, PdfFont, PDF_UNITS_PER_EM};
-use crate::text::{Glyph, GlyphId};
+use crate::text::{Glyph, GlyphId, GlyphRun};
 use crate::util::{calculate_stroke_bbox, NameExt};
 
 pub(crate) struct ContentBuilder {
@@ -403,7 +403,7 @@ impl ContentBuilder {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn draw_glyphs(
+    pub(crate) fn draw_glyphs<G: Glyph>(
         &mut self,
         start: Point,
         sc: &mut SerializeContext,
@@ -411,16 +411,67 @@ impl ContentBuilder {
         fill: Option<&Fill>,
         stroke: Option<&Stroke>,
         context_color: rgb::Color,
-        glyphs: &[impl Glyph],
+        glyphs: &[G],
         font: Font,
         text: &str,
         font_size: f32,
+    ) {
+        let run = GlyphRun {
+            start,
+            glyphs,
+            font,
+            text,
+            font_size,
+        };
+        self.draw_glyph_runs(
+            &[run],
+            None,
+            sc,
+            chunk_container,
+            fill,
+            stroke,
+            context_color,
+        );
+    }
+
+    /// Draw glyph runs in one isolated operation (one `q`/`Q`), each run in its own
+    /// text object. With `actual_text`, the text objects are wrapped in a `/Span`
+    /// marked-content sequence carrying it as `/ActualText`, inside the operation:
+    /// a reader that places the replacement text by the glyphs' positions (poppler)
+    /// needs the span under the same transform as the glyphs it covers.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw_glyph_runs<G: Glyph>(
+        &mut self,
+        runs: &[GlyphRun<'_, G>],
+        actual_text: Option<&str>,
+        sc: &mut SerializeContext,
+        chunk_container: &mut ChunkContainer,
+        fill: Option<&Fill>,
+        stroke: Option<&Stroke>,
+        context_color: rgb::Color,
     ) {
         if fill.is_none() && stroke.is_none() {
             return;
         }
 
-        let (x, y) = (start.x, start.y);
+        // The union of the runs' boxes.
+        let runs_bbox = || {
+            let mut bbox: Option<Rect> = None;
+            for run in runs.iter().filter(|r| !r.glyphs.is_empty()) {
+                let run_bbox = get_glyphs_bbox(
+                    run.glyphs,
+                    run.start.x,
+                    run.start.y,
+                    run.font_size,
+                    run.font.clone(),
+                );
+                match &mut bbox {
+                    Some(bbox) => bbox.expand(&run_bbox),
+                    None => bbox = Some(run_bbox),
+                }
+            }
+            bbox.unwrap_or(Rect::from_xywh(0.0, 0.0, 1.0, 1.0).unwrap())
+        };
         self.graphics_states.save_state();
 
         // Calculating the glyphs bbox is very expensive but not always necessary, so omit
@@ -433,7 +484,7 @@ impl ContentBuilder {
                            chunk_container: &mut ChunkContainer,
                            fill: &Fill| {
             let bbox = if calculate_bbox(matches!(&fill.paint.0, InnerPaint::Color(_))) {
-                let bbox = get_glyphs_bbox(glyphs, x, y, font_size, font.clone());
+                let bbox = runs_bbox();
                 sb.expand_bbox(bbox);
                 bbox
             } else {
@@ -449,7 +500,7 @@ impl ContentBuilder {
                              stroke: &Stroke| {
             let bbox = if calculate_bbox(matches!(&stroke.paint.0, InnerPaint::Color(_))) {
                 // TODO: Bbox should also account for stroke.
-                let bbox = get_glyphs_bbox(glyphs, x, y, font_size, font.clone());
+                let bbox = runs_bbox();
                 sb.expand_bbox(bbox);
                 bbox
             } else {
@@ -485,9 +536,9 @@ impl ContentBuilder {
                 set_fill_opacity(self, f);
                 set_stroke_opacity(self, s);
 
-                self.fill_stroke_glyph_run(
-                    x,
-                    y,
+                self.fill_stroke_glyph_runs(
+                    runs,
+                    actual_text,
                     sc,
                     chunk_container,
                     TextRenderingMode::FillStroke,
@@ -495,49 +546,37 @@ impl ContentBuilder {
                         fill_action(sb, sc, chunk_container, f);
                         stroke_action(sb, sc, chunk_container, s);
                     },
-                    glyphs,
-                    font.clone(),
                     context_color,
-                    text,
-                    font_size,
                 );
             }
             (Some(f), None) => {
                 set_fill_opacity(self, f);
 
-                self.fill_stroke_glyph_run(
-                    x,
-                    y,
+                self.fill_stroke_glyph_runs(
+                    runs,
+                    actual_text,
                     sc,
                     chunk_container,
                     TextRenderingMode::Fill,
                     |sb, sc, chunk_container| {
                         fill_action(sb, sc, chunk_container, f);
                     },
-                    glyphs,
-                    font.clone(),
                     context_color,
-                    text,
-                    font_size,
                 );
             }
             (None, Some(s)) => {
                 set_stroke_opacity(self, s);
 
-                self.fill_stroke_glyph_run(
-                    x,
-                    y,
+                self.fill_stroke_glyph_runs(
+                    runs,
+                    actual_text,
                     sc,
                     chunk_container,
                     TextRenderingMode::Stroke,
                     |sb, sc, chunk_container| {
                         stroke_action(sb, sc, chunk_container, s);
                     },
-                    glyphs,
-                    font.clone(),
                     context_color,
-                    text,
-                    font_size,
                 );
             }
             (None, None) => unreachable!(),
@@ -683,68 +722,93 @@ impl ContentBuilder {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn fill_stroke_glyph_run(
+    fn fill_stroke_glyph_runs<G: Glyph>(
         &mut self,
-        x: f32,
-        ys: f32,
+        runs: &[GlyphRun<'_, G>],
+        actual_text: Option<&str>,
         sc: &mut SerializeContext,
         chunk_container: &mut ChunkContainer,
         fill_render_mode: TextRenderingMode,
         action: impl FnOnce(&mut ContentBuilder, &mut SerializeContext, &mut ChunkContainer),
-        glyphs: &[impl Glyph],
-        font: Font,
         context_color: rgb::Color,
-        text: &str,
-        font_size: f32,
     ) {
-        if glyphs.is_empty() {
+        if runs.iter().all(|r| r.glyphs.is_empty()) {
             return;
         }
 
         self.apply_isolated_op(
             |_, _, _| {},
             |sb, sc, chunk_container| {
-                let mut cur_x = x;
-                let mut cur_y = ys;
-
-                // When the glyph ranges are monotonically decreasing, the glyphs are in reverse
-                // order and we should write `/ReversedChars` marked content.
-                let reversed = glyphs.len() > 1
-                    && glyphs
-                        .windows(2)
-                        .all(|w| w[0].text_range().start >= w[1].text_range().end);
-
                 action(sb, sc, chunk_container);
-                sb.content.begin_text();
 
-                let font_container = sc.register_font_container(font.clone());
-                let do_text_span = reversed
-                    || use_text_spanner(
-                        glyphs,
-                        text,
-                        context_color,
-                        &mut font_container.borrow_mut(),
-                    );
+                let actual_text = actual_text
+                    .filter(|_| sc.serialize_settings().pdf_version() >= PdfVersion::Pdf15);
+                if let Some(actual_text) = actual_text {
+                    sb.content
+                        .begin_marked_content_with_properties(Name(b"Span"))
+                        .properties()
+                        .actual_text(TextStr(actual_text));
+                }
 
-                if do_text_span {
-                    // Separate into distinct glyph runs that either are encoded using actual text, or are
-                    // not.
-                    let spanned = GlyphSpanner::new(
-                        glyphs,
-                        text,
-                        reversed,
-                        sc.serialize_settings()
-                            .validators()
-                            .requires_codepoint_mappings(),
-                        context_color,
-                        font_container.clone(),
-                    );
+                for run in runs.iter().filter(|r| !r.glyphs.is_empty()) {
+                    let (glyphs, font, text, font_size) =
+                        (run.glyphs, run.font.clone(), run.text, run.font_size);
+                    let mut cur_x = run.start.x;
+                    let mut cur_y = run.start.y;
 
-                    for fragment in spanned {
+                    // When the glyph ranges are monotonically decreasing, the glyphs are in reverse
+                    // order and we should write `/ReversedChars` marked content.
+                    let reversed = glyphs.len() > 1
+                        && glyphs
+                            .windows(2)
+                            .all(|w| w[0].text_range().start >= w[1].text_range().end);
+
+                    sb.content.begin_text();
+
+                    let font_container = sc.register_font_container(font.clone());
+                    let do_text_span = reversed
+                        || use_text_spanner(
+                            glyphs,
+                            text,
+                            context_color,
+                            &mut font_container.borrow_mut(),
+                        );
+
+                    if do_text_span {
+                        // Separate into distinct glyph runs that either are encoded using actual text, or are
+                        // not.
+                        let spanned = GlyphSpanner::new(
+                            glyphs,
+                            text,
+                            reversed,
+                            sc.serialize_settings()
+                                .validators()
+                                .requires_codepoint_mappings(),
+                            context_color,
+                            font_container.clone(),
+                        );
+
+                        for fragment in spanned {
+                            sb.fill_stroke_glyph_span(
+                                &mut cur_x,
+                                &mut cur_y,
+                                fragment,
+                                sc,
+                                fill_render_mode,
+                                font_container.clone(),
+                                context_color,
+                                text,
+                                font_size,
+                                reversed,
+                            )
+                        }
+                    } else {
+                        let glyph_span = GlyphSpan::Unspanned(glyphs);
+
                         sb.fill_stroke_glyph_span(
                             &mut cur_x,
                             &mut cur_y,
-                            fragment,
+                            glyph_span,
                             sc,
                             fill_render_mode,
                             font_container.clone(),
@@ -754,24 +818,13 @@ impl ContentBuilder {
                             reversed,
                         )
                     }
-                } else {
-                    let glyph_span = GlyphSpan::Unspanned(glyphs);
 
-                    sb.fill_stroke_glyph_span(
-                        &mut cur_x,
-                        &mut cur_y,
-                        glyph_span,
-                        sc,
-                        fill_render_mode,
-                        font_container.clone(),
-                        context_color,
-                        text,
-                        font_size,
-                        reversed,
-                    )
+                    sb.content.end_text();
                 }
 
-                sb.content.end_text();
+                if actual_text.is_some() {
+                    sb.content.end_marked_content();
+                }
             },
             sc,
             chunk_container,

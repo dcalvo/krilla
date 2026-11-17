@@ -31,6 +31,22 @@ pub use glyph::*;
 #[cfg(feature = "simple-text")]
 pub use shape::TextDirection;
 
+/// A run of glyphs in one font, starting at one point: one part of what
+/// [`Surface::draw_glyphs_as`](crate::surface::Surface::draw_glyphs_as) draws.
+pub struct GlyphRun<'a, G: Glyph> {
+    /// Where the run starts, as for
+    /// [`Surface::draw_glyphs`](crate::surface::Surface::draw_glyphs).
+    pub start: crate::geom::Point,
+    /// The glyphs, each with its range into `text`.
+    pub glyphs: &'a [G],
+    /// The font they are drawn in.
+    pub font: Font,
+    /// The text the glyphs' ranges index into: each glyph's own Unicode.
+    pub text: &'a str,
+    /// The font size.
+    pub font_size: f32,
+}
+
 pub(crate) const PDF_UNITS_PER_EM: f32 = 1000.0;
 
 /// A unique CID identifier.

@@ -16,13 +16,14 @@ use krilla::tagging::{
     SpanTag, TagGroup, TagTree,
 };
 use krilla::tagging::{ListNumbering, Placement, TableHeaderScope, Tag, TagId, WritingMode};
-use krilla::text::{Font, TextDirection};
+use krilla::text::{Font, GlyphId, GlyphRun, KrillaGlyph, TextDirection};
 use krilla::Document;
 use krilla_macros::snapshot;
 use krilla_svg::{SurfaceExt, SvgSettings};
 
 use crate::{
-    basic_mask, green_fill, load_png_image, loc, rect_to_path, red_stroke, NOTO_SANS, SVGS_PATH,
+    basic_mask, green_fill, load_png_image, loc, rect_to_path, red_stroke, LIBERTINUS_SERIF,
+    NOTO_SANS, SVGS_PATH,
 };
 
 pub trait SurfaceTaggingExt {
@@ -807,6 +808,74 @@ fn tagging_pop_with_active_tagged_section() {
     surface.push_opacity(NormalizedF32::new(0.5).unwrap());
     surface.start_tagged(ContentTag::Span(SpanTag::empty()));
     surface.pop();
+}
+
+/// The glyph `c` maps to in a test font.
+fn glyph_of(data: &krilla::Data, c: char) -> GlyphId {
+    use skrifa::MetadataProvider;
+    let font = skrifa::FontRef::new(data.as_ref()).unwrap();
+    GlyphId::new(font.charmap().map(c).unwrap().to_u32())
+}
+
+/// "É" as pdfTeX draws it, the accent raised and alone, then the letter, here in two
+/// fonts: one operation (one `q`/`Q`), a text object per run, both inside one
+/// `/ActualText` span, inside the tagged section. Each glyph keeps its own Unicode
+/// (`´` U+00B4, `E` U+0045), and the tag tree is just the paragraph.
+#[snapshot(document)]
+fn tagging_glyphs_as_actual_text(document: &mut Document) {
+    let mut tag_tree = TagTree::new();
+    let mut par = TagGroup::new(Tag::P);
+
+    let accent = [KrillaGlyph::new(
+        glyph_of(&LIBERTINUS_SERIF, '\u{b4}'),
+        0.3,
+        0.0,
+        0.0,
+        0.0,
+        0..2,
+        None,
+    )];
+    let letter = [KrillaGlyph::new(
+        glyph_of(&NOTO_SANS, 'E'),
+        0.6,
+        0.0,
+        0.0,
+        0.0,
+        0..1,
+        None,
+    )];
+
+    let mut page = document.start_page();
+    let mut surface = page.surface();
+    let id = surface.start_tagged(ContentTag::Other);
+    surface.fill_text_(25.0, "from");
+    surface.draw_glyphs_as(
+        &[
+            GlyphRun {
+                start: Point::from_xy(52.0, 21.0),
+                glyphs: &accent,
+                font: Font::new(LIBERTINUS_SERIF.clone(), 0).unwrap(),
+                text: "\u{b4}",
+                font_size: 20.0,
+            },
+            GlyphRun {
+                start: Point::from_xy(50.0, 25.0),
+                glyphs: &letter,
+                font: Font::new(NOTO_SANS.clone(), 0).unwrap(),
+                text: "E",
+                font_size: 20.0,
+            },
+        ],
+        "\u{c9}",
+    );
+    surface.end_tagged();
+
+    surface.finish();
+    page.finish();
+
+    par.push(id);
+    tag_tree.push(par);
+    document.set_tag_tree(tag_tree);
 }
 
 #[test]
